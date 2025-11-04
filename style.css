@@ -367,3 +367,59 @@ a {
     margin-top: 2rem;
     width: 200px;
 }
+
+
+/* --- Added for Tab Content --- */
+.tab-content {
+    display: none; /* Hide all tab content by default */
+}
+
+.tab-content.active {
+    display: block; /* Show only the active tab content */
+}
+
+/* Styles for the Upload Resume tab */
+.upload-resume-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 3rem 2rem;
+    border: 2px dashed var(--border-color);
+    border-radius: 10px;
+    background-color: #fdfdfd;
+}
+
+.upload-resume-container .icon {
+    font-size: 3rem;
+    color: var(--primary-color);
+    background-color: #e6f2ff;
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+}
+
+.upload-resume-container h3 {
+    font-size: 1.5rem;
+    color: var(--text-color);
+    margin-bottom: 0.5rem;
+}
+
+.upload-resume-container p {
+    font-size: 0.9rem;
+    color: var(--text-light);
+    margin-bottom: 1.5rem;
+}
+
+.upload-resume-container input[type="file"] {
+    border: 1px solid var(--border-color);
+    padding: 0.5rem;
+    border-radius: 5px;
+    width: 100%;
+    max-width: 300px;
+}
