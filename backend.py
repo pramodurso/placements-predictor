@@ -2,11 +2,12 @@ import os
 import sys
 import json
 import uvicorn
+import httpx # Added from main.py
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field # Added Field from main.py
 import shutil
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal # Added Literal from main.py
 import time
 from getpass import getpass
 import threading
@@ -267,11 +268,12 @@ def convert_gemini_to_recommender_format(gemini_data: dict) -> dict:
 #
 # --- 3. FastAPI App & Endpoints ---
 #
-app = FastAPI()
+app = FastAPI(
+    title="Multi-Purpose AI API",
+    description="Serves Resume Analysis, Audio Analysis, and Skills Testing."
+)
 
 # --- Enable CORS ---
-# This is the block that was likely causing the error.
-# It should be at the top level (no indentation).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -280,7 +282,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Define API Models ---
+#
+# --- 3A. Pydantic Models ---
+#
+
+# --- Models for Resume/Job Analysis ---
 class SkillGap(BaseModel):
     basic_missing: List[str]
     intermediate_missing: List[str]
@@ -291,21 +297,102 @@ class Recommendation(BaseModel):
     match_score: float
     skill_gap: SkillGap
 
-# --- FIX: Renamed class to be unique ---
-# This is the response model for the resume endpoint
 class ResumeAnalysisResponse(BaseModel):
     message: str
     recommendations: List[Recommendation]
     parsed_data: Dict[str, Any]  # This will hold the full JSON from Gemini
 
-# --- FIX: Renamed class to be unique ---
-# This is the response model for the audio endpoint
 class AudioAnalysisResponse(BaseModel):
     message: str
     report: Dict[str, Any]
 
+# --- Models for Skills Tester (from main.py) ---
+class TestConfig(BaseModel):
+    """Request model for configuring the test."""
+    skills: List[str] = Field(..., min_length=1)
+    difficulty: Literal['Easy', 'Medium', 'Hard']
+    num_questions: int = Field(5, gt=0, le=10)
 
-# --- API Endpoints ---
+class Question(BaseModel):
+    """Response model for a single question."""
+    id: int
+    type: Literal['multiple-choice', 'open-ended', 'coding']
+    question: str
+    topics: List[str]
+    options: Optional[List[str]] = None
+    answer: str # For MC, this is the exact option string. For others, it's the model answer.
+
+
+#
+# --- 3B. Helper Functions for Skills Tester ---
+#
+def get_gemini_schema():
+    """Defines the JSON schema for the LLM's response."""
+    return {
+        "type": "ARRAY",
+        "items": {
+            "type": "OBJECT",
+            "properties": {
+                "id": {"type": "INTEGER", "description": "A unique integer ID for the question, e.g., 1"},
+                "type": {
+                    "type": "STRING",
+                    "enum": ["multiple-choice", "open-ended", "coding"],
+                    "description": "The type of question."
+                },
+                "question": {"type": "STRING", "description": "The text of the question."},
+                "topics": {
+                    "type": "ARRAY",
+                    "items": {"type": "STRING"},
+                    "description": "A list of topics (from the user's input) this question covers."
+                },
+                "options": {
+                    "type": "ARRAY",
+                    "items": {"type": "STRING"},
+                    "description": "A list of 4 options. REQUIRED for 'multiple-choice', null otherwise."
+                },
+                "answer": {
+                    "type": "STRING",
+                    "description": "The correct answer. For 'multiple-choice', must be one of the options. For 'coding', provide a model solution. For 'open-ended', provide a detailed model answer."
+                }
+            },
+            "required": ["id", "type", "question", "topics", "answer"]
+        }
+    }
+
+def create_system_prompt(config: TestConfig) -> str:
+    """Creates the system instruction for the LLM."""
+    skill_list = ", ".join(config.skills)
+    return (
+        "You are an expert technical interviewer and educator. Your task is to generate a set of high-quality "
+        f"{config.difficulty}-level interview questions based on a specific list of topics. "
+        "Follow all instructions precisely."
+    )
+
+def create_user_prompt(config: TestConfig) -> str:
+    """Creates the user-facing prompt for the LLM."""
+    skill_list = ", ".join(config.skills)
+    
+    # Ensure at least one coding question if relevant skills are present
+    coding_hint = ""
+    coding_skills = ['python', 'fastapi', 'javascript', 'react', 'sql', 'html/css', 'data structures', 'algorithms']
+    if any(skill.lower() in coding_skills for skill in config.skills):
+        coding_hint = "You MUST include at least one 'coding' question. "
+
+    return (
+        f"Generate exactly {config.num_questions} {config.difficulty}-level technical questions based on these topics: {skill_list}. "
+        f"{coding_hint}"
+        "For each question, provide all fields as defined in the JSON schema. "
+        "For 'multiple-choice' questions, you MUST provide exactly 4 options and the 'answer' must be one of them. "
+        "For 'coding' questions, the 'question' should be a problem statement and the 'answer' should be a complete, correct code solution. "
+        "For 'open-ended' questions, the 'answer' should be a comprehensive, correct explanation. "
+        "Ensure the 'topics' for each question are a subset of the list I provided. "
+        "Return ONLY the JSON array."
+    )
+
+
+#
+# --- 3C. API Endpoints ---
+#
 @app.get("/")
 def read_root():
     return {
@@ -314,11 +401,13 @@ def read_root():
         },
         "communication_analyzer_status": {
             "message": "Communication Analyzer API is running. POST to /analyze_audio/ to upload an audio file."
+        },
+        "skills_tester_status": {
+            "message": "Skills Tester API is running. POST to /generate-questions to create a test."
         }
     }
 
 
-# --- FIX: Updated response_model to use the new unique class ---
 @app.post("/analyze_resume/", response_model=ResumeAnalysisResponse)
 async def analyze_resume(file: UploadFile = File(...)):
 
@@ -360,7 +449,6 @@ async def analyze_resume(file: UploadFile = File(...)):
         print("Analysis complete.")
 
         # --- UPDATED Return ---
-        # This return statement is the new, correct one.
         return {
             "message": "Analysis successful!",
             "recommendations": recommendations,
@@ -376,7 +464,6 @@ async def analyze_resume(file: UploadFile = File(...)):
             os.remove(temp_pdf_path)
 
 
-# --- FIX: Updated response_model to use the new unique class ---
 @app.post("/analyze_audio/", response_model=AudioAnalysisResponse)
 async def analyze_audio(file: UploadFile = File(...)):
 
@@ -399,11 +486,6 @@ async def analyze_audio(file: UploadFile = File(...)):
         print(f"Processing: {temp_audio_path}")
 
         # The analyzer class handles everything:
-        # 1. Cleaning the audio (if needed)
-        # 2. Transcribing (Whisper)
-        # 3. Text Analysis (Gemini)
-        # 4. Prosody Analysis (Parselmouth)
-        # 5. Final Report
         report = analyzer.get_final_analysis(temp_audio_path)
 
         if "error" in report:
@@ -424,6 +506,65 @@ async def analyze_audio(file: UploadFile = File(...)):
         # Clean up the temporary file
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
+
+
+# --- NEW ENDPOINT (from main.py, but adapted) ---
+@app.post("/generate-questions", response_model=List[Question])
+async def generate_questions(config: TestConfig):
+    """
+    Generates a list of questions based on selected skills and difficulty.
+    Uses the genai library, not httpx, to respect the Colab auth flow.
+    """
+    system_prompt = create_system_prompt(config)
+    user_prompt = create_user_prompt(config)
+    schema = get_gemini_schema()
+    
+    response = None # Initialize for error logging
+
+    try:
+        # 1. Initialize the model with the system prompt and JSON schema
+        model = genai.GenerativeModel(
+            'gemini-2.5-flash-preview-09-2025',
+            system_instruction=system_prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=schema,
+                temperature=0.8
+            )
+        )
+        
+        # 2. Call the API asynchronously
+        # Use generate_content_async since this is an async def function
+        response = await model.generate_content_async(user_prompt)
+
+        # 3. Parse the response
+        json_string = response.parts[0].text
+        question_data_list = json.loads(json_string)
+        
+        # 4. Validate with Pydantic
+        validated_questions = [Question(**q) for q in question_data_list]
+        return validated_questions
+
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        if response:
+             # Check for safety blocks
+            if response.prompt_feedback.block_reason:
+                print(f"Request blocked for safety reasons: {response.prompt_feedback.block_reason}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Request blocked by safety filter: {response.prompt_feedback.block_reason}"
+                )
+            # Log the raw text if parsing failed
+            if hasattr(response, 'parts') and response.parts:
+                print(f"Gemini response text (on error): {response.parts[0].text}")
+
+        # Handle Pydantic validation errors specifically
+        if "validation error" in str(e):
+             raise HTTPException(status_code=500, detail=f"LLM data validation error: {e}")
+             
+        raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+
 
 #
 # --- 4. Colab/Ngrok Specific Launch Code ---
@@ -446,6 +587,7 @@ def run_with_ngrok(app):
         print("If the app stops working, you may need to update the URL in index.html to match the one above.")
         print(f"Resume Endpoint: {public_url}/analyze_resume/")
         print(f"Audio Endpoint:  {public_url}/analyze_audio/")
+        print(f"Skills Tester:   {public_url}/generate-questions") # --- ADDED THIS LINE ---
         print("---")
 
     except Exception as e:
